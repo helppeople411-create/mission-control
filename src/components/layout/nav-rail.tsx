@@ -32,6 +32,8 @@ const navGroups: NavGroup[] = [
       { id: 'overview', label: 'Overview', icon: <OverviewIcon />, priority: true, essential: true },
       { id: 'agents', label: 'Agents', icon: <AgentsIcon />, priority: true, essential: true },
       { id: 'tasks', label: 'Tasks', icon: <TasksIcon />, priority: true, essential: true },
+      { id: 'council', label: 'Council', icon: <CouncilIcon />, priority: false },
+      { id: 'skill-engine', label: 'Skill Engine', icon: <SkillEngineIcon />, priority: false },
       { id: 'chat', label: 'Chat', icon: <ChatIcon />, priority: false, essential: true },
       { id: 'channels', label: 'Channels', icon: <ChannelsIcon />, priority: false },
       { id: 'skills', label: 'Skills', icon: <SkillsIcon />, priority: false },
@@ -1261,6 +1263,25 @@ function TasksIcon() {
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <rect x="2" y="1" width="12" height="14" rx="1.5" />
       <path d="M5 5h6M5 8h6M5 11h3" />
+    </svg>
+  )
+}
+
+function CouncilIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="4" cy="5" r="2" />
+      <circle cx="12" cy="5" r="2" />
+      <circle cx="8" cy="11" r="2" />
+      <path d="M5.6 6.4 7 9.4M10.4 6.4 9 9.4M6 5h4" />
+    </svg>
+  )
+}
+
+function SkillEngineIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M8 1.5 10 5.5 14 6 11 9 11.7 13 8 11 4.3 13 5 9 2 6 6 5.5z" />
     </svg>
   )
 }

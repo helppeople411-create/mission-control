@@ -1428,6 +1428,300 @@ const migrations: Migration[] = [
       db.exec(`ALTER TABLE mcp_call_log ADD COLUMN signature TEXT DEFAULT NULL`)
       db.exec(`ALTER TABLE mcp_call_log ADD COLUMN public_key TEXT DEFAULT NULL`)
     }
+  },
+  {
+    id: '051_council_mode',
+    up(db: Database.Database) {
+      // Agent Council: a deliberation layer that sits between "goal created"
+      // and "task execution". Multiple agents debate, challenge, and reach
+      // consensus on a strategy before Mission Control dispatches tasks.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS council_sessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          workspace_id INTEGER NOT NULL DEFAULT 1,
+          goal_id INTEGER,
+          title TEXT NOT NULL,
+          user_goal TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+            -- pending | debating | consensus_reached | failed | executed
+          consensus_threshold REAL NOT NULL DEFAULT 0.85,
+          max_rounds INTEGER NOT NULL DEFAULT 5,
+          current_round INTEGER NOT NULL DEFAULT 0,
+          final_strategy TEXT,
+          final_confidence REAL,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE INDEX IF NOT EXISTS idx_council_sessions_workspace
+          ON council_sessions(workspace_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_council_sessions_status
+          ON council_sessions(status);
+      `)
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS council_participants (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          council_session_id INTEGER NOT NULL,
+          agent_id INTEGER NOT NULL,
+          agent_name TEXT NOT NULL,
+          council_role TEXT NOT NULL,
+            -- Strategist | Researcher | Critic | Validator | Executor
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (council_session_id)
+            REFERENCES council_sessions(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_council_participants_session
+          ON council_participants(council_session_id);
+      `)
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS council_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          council_session_id INTEGER NOT NULL,
+          round_number INTEGER NOT NULL,
+          agent_id INTEGER NOT NULL,
+          agent_name TEXT NOT NULL,
+          role TEXT NOT NULL,
+          message_type TEXT NOT NULL,
+            -- proposal | challenge | evidence | revision | vote | final
+          content TEXT NOT NULL,
+          confidence_score REAL,
+          references_json TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (council_session_id)
+            REFERENCES council_sessions(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_council_messages_session
+          ON council_messages(council_session_id, round_number);
+      `)
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS council_votes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          council_session_id INTEGER NOT NULL,
+          round_number INTEGER NOT NULL DEFAULT 0,
+          agent_id INTEGER NOT NULL,
+          agent_name TEXT,
+          vote TEXT NOT NULL,
+            -- agree | disagree | revise
+          confidence_score REAL,
+          reason TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (council_session_id)
+            REFERENCES council_sessions(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_council_votes_session
+          ON council_votes(council_session_id, round_number);
+      `)
+    }
+  },
+  {
+    id: '052_skill_engine',
+    up(db: Database.Database) {
+      // Skill Engine + Knowledge Ingestion layer.
+      // Reusable agent skills, versioned; ingested PDFs/links/notes become
+      // searchable knowledge; skills can be attached to Council sessions.
+
+      // --- Reusable agent skills ---------------------------------------
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agent_skills (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          workspace_id INTEGER NOT NULL DEFAULT 1,
+          name TEXT NOT NULL,
+          slug TEXT NOT NULL,
+          description TEXT,
+          instructions TEXT,
+          input_schema_json TEXT,
+          output_schema_json TEXT,
+          tools_allowed_json TEXT,
+          example_prompts_json TEXT,
+          source_type TEXT NOT NULL DEFAULT 'manual',
+            -- manual | pdf | link | generated
+          source_ids_json TEXT,
+          status TEXT NOT NULL DEFAULT 'draft',
+            -- draft | active | archived
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          UNIQUE(workspace_id, slug)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_skills_workspace
+          ON agent_skills(workspace_id, status);
+      `)
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agent_skill_versions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          skill_id INTEGER NOT NULL,
+          version_number INTEGER NOT NULL,
+          instructions TEXT,
+          changelog TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (skill_id)
+            REFERENCES agent_skills(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_skill_versions_skill
+          ON agent_skill_versions(skill_id, version_number);
+      `)
+
+      // --- Knowledge ingestion ----------------------------------------
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS knowledge_sources (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          workspace_id INTEGER NOT NULL DEFAULT 1,
+          type TEXT NOT NULL,
+            -- pdf | link | text | note
+          title TEXT NOT NULL,
+          url TEXT,
+          file_path TEXT,
+          raw_text TEXT,
+          summary TEXT,
+          key_points_json TEXT,
+          entities_json TEXT,
+          tags_json TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_sources_workspace
+          ON knowledge_sources(workspace_id, created_at);
+      `)
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS knowledge_chunks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          knowledge_source_id INTEGER NOT NULL,
+          chunk_text TEXT NOT NULL,
+          chunk_index INTEGER NOT NULL,
+          embedding_vector TEXT,
+          metadata_json TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (knowledge_source_id)
+            REFERENCES knowledge_sources(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_source
+          ON knowledge_chunks(knowledge_source_id, chunk_index);
+      `)
+
+      // FTS index over chunk text — keyword search until real embeddings
+      // are wired (matches the repo's memory_fts approach).
+      db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(
+          chunk_text,
+          source_title,
+          chunk_id UNINDEXED,
+          source_id UNINDEXED,
+          tokenize='porter unicode61'
+        )
+      `)
+
+      // --- Skill run history (which skills work best) ------------------
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agent_skill_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          skill_id INTEGER NOT NULL,
+          goal_id INTEGER,
+          council_session_id INTEGER,
+          agent_id INTEGER,
+          input_json TEXT,
+          output_json TEXT,
+          success_score REAL,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (skill_id)
+            REFERENCES agent_skills(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_skill_runs_skill
+          ON agent_skill_runs(skill_id, created_at);
+      `)
+
+      // --- Council Mode <-> Skill Engine bridge ------------------------
+      // Records which skill each agent loaded for a council session.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS council_session_skills (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          council_session_id INTEGER NOT NULL,
+          skill_id INTEGER NOT NULL,
+          agent_id INTEGER,
+          agent_name TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE INDEX IF NOT EXISTS idx_council_session_skills_session
+          ON council_session_skills(council_session_id);
+      `)
+
+      // --- Built-in Skill Builder Agent (spec §13) ---------------------
+      try {
+        db.prepare(
+          `INSERT OR IGNORE INTO agents
+             (name, role, status, soul_content, workspace_id)
+           VALUES (?, ?, 'idle', ?, 1)`
+        ).run(
+          'Skill Builder',
+          'skill-builder',
+          'Reads PDFs and links, digests knowledge, and turns it into ' +
+            'clear, reusable agent skills with step-by-step procedures, ' +
+            'quality checklists, examples, and tool recommendations.'
+        );
+      } catch {
+        // agents table shape varies across installs — seeding is best-effort.
+      }
+    }
+  },
+  {
+    id: '053_memory_loop',
+    up(db: Database.Database) {
+      // Brand voice — the user's writing style, tone, and communication rules.
+      // Synced to/from an Obsidian note at Mission Control/Brand Voice.md
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS brand_voice_notes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          workspace_id INTEGER NOT NULL DEFAULT 1,
+          content TEXT NOT NULL DEFAULT '',
+          obsidian_path TEXT,
+          synced_at INTEGER,
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          UNIQUE(workspace_id)
+        )
+      `)
+
+      // User / brand profile — knowledge about the person and their brand.
+      // Synced to/from an Obsidian note at Mission Control/Profile.md
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS user_profile_notes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          workspace_id INTEGER NOT NULL DEFAULT 1,
+          content TEXT NOT NULL DEFAULT '',
+          obsidian_path TEXT,
+          synced_at INTEGER,
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          UNIQUE(workspace_id)
+        )
+      `)
+
+      // Log what memory context was retrieved for each council session.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS memory_context_log (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          council_session_id INTEGER NOT NULL,
+          source_type TEXT NOT NULL,
+            -- knowledge | memory_fts | brand_voice | profile | skill
+          source_id INTEGER,
+          snippet TEXT,
+          relevance_score REAL,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_context_log_session
+          ON memory_context_log(council_session_id);
+      `)
+
+      // Add memory_context_json to council sessions so retrieved context
+      // travels with the session into the reasoner.
+      try {
+        const cols = db.prepare(`PRAGMA table_info(council_sessions)`).all() as Array<{ name: string }>
+        if (!cols.some(c => c.name === 'memory_context_json')) {
+          db.exec(`ALTER TABLE council_sessions ADD COLUMN memory_context_json TEXT`)
+        }
+      } catch {
+        // session table not yet present — migrations run in order, this is safe.
+      }
+    }
   }
 ]
 

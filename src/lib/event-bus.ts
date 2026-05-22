@@ -38,6 +38,15 @@ export type EventType =
   | 'run.eval_attached'
   | 'task.escalated'
   | 'session.updated'
+  | 'council.session_created'
+  | 'council.session_updated'
+  | 'council.message_created'
+  | 'council.vote_created'
+  | 'council.round_completed'
+  | 'council.executed'
+  | 'skill.created'
+  | 'skill.updated'
+  | 'knowledge.ingested'
 
 class ServerEventBus extends EventEmitter {
   private static instance: ServerEventBus | null = null

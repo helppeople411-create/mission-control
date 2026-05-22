@@ -38,6 +38,8 @@ import { NodesPanel } from '@/components/panels/nodes-panel'
 import { ExecApprovalPanel } from '@/components/panels/exec-approval-panel'
 import { SystemMonitorPanel } from '@/components/panels/system-monitor-panel'
 import { ChatPagePanel } from '@/components/panels/chat-page-panel'
+import { CouncilModePanel } from '@/components/panels/council-mode-panel'
+import { SkillEnginePanel } from '@/components/panels/skill-engine-panel'
 import { ChatPanel } from '@/components/chat/chat-panel'
 import { STORAGE_GATEWAY_URL } from '@/lib/device-identity'
 import { getPluginPanel } from '@/lib/plugins'
@@ -538,6 +540,10 @@ function ContentRouter({ tab }: { tab: string }) {
       )
     case 'tasks':
       return <TaskBoardPanel />
+    case 'council':
+      return <CouncilModePanel />
+    case 'skill-engine':
+      return <SkillEnginePanel />
     case 'agents':
       return (
         <>
